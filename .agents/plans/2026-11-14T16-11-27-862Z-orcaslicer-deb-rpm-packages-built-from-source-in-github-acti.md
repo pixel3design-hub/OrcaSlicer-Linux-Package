@@ -158,3 +158,19 @@ What the workflow does, how to dispatch it (`upstream_ref`, `force`), asset name
 ## Not in scope (follow-ups)
 
 - ccache / deps cache, scheduled rebuilds, arm64, package signing, `postinstall` running `update-desktop-database`/`update-mime-database`, separate `-dev` or profile-validator packages.
+
+## Implementation notes (as built)
+
+- nfpm's `release: "1"` also lands in the deb version, so assets are
+  `orca-slicer_2.5.1-1_amd64.deb` and `orca-slicer-2.5.1-1.x86_64.rpm` (README/release notes updated).
+- `nfpm pkg -t <dir>/` requires that directory to already exist → `mkdir -p ../dist` before packaging.
+- dpkg-deb lists directories with a trailing slash; both file lists are normalized
+  (`sed -e 's|^\./||' -e 's|/$||'`, rpm also strips the leading `/`) before the path assertions.
+- The ldd check also fails when `ldd` yields no output, so a broken/host-incompatible binary
+  cannot pass the step silently.
+- Verified locally in an ubuntu:24.04 container against a fake AppDir: nfpm config produces both
+  packages, symlink and `type: tree` work, `Depends`/rpm `Requires` render as written, the icon
+  and desktop paths land where the verify step expects, `appimage_is_host_library` classifies
+  webkit/gtk/OpenGL as host and tbb-like libs as bundled, and `actionlint` is clean on the workflow.
+- Local container runs need `--security-opt label=disable` on this Fedora host (SELinux), else
+  bind-mounted writes fail with EACCES.
