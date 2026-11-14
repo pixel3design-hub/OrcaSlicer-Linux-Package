@@ -1,0 +1,188 @@
+name: build-deb-rpm
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream tag/ref to build (empty = latest OrcaSlicer release)"
+        default: ""
+      force:
+        description: "Rebuild even if a release for that ref already exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-linux
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: OrcaSlicer/OrcaSlicer
+  NFPM_VERSION: "2.49.0"
+  ICON_SIZES: "16 24 32 48 64 128 256 512"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: Resolve upstream ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_REF: ${{ inputs.upstream_ref }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          ref="${INPUT_REF:-$(gh api "repos/${UPSTREAM_REPO}/releases/latest" -q .tag_name)}"
+          if [ -z "$ref" ]; then
+            echo "::error::could not resolve an upstream ref"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" != "true" ] && gh release view "$ref" >/dev/null 2>&1; then
+            echo "SKIP=true" >> "$GITHUB_ENV"
+            echo "Release $ref already exists — set force=true to rebuild."
+          fi
+
+      - name: Checkout packaging repo
+        if: env.SKIP != 'true'
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream at ref
+        if: env.SKIP != 'true'
+        env:
+          REF: ${{ steps.resolve.outputs.ref }}
+        run: git clone --depth 1 --branch "$REF" "https://github.com/${UPSTREAM_REPO}.git" upstream
+
+      - name: Install build dependencies
+        if: env.SKIP != 'true'
+        working-directory: upstream
+        run: sudo ./build_linux.sh -ur
+
+      - name: Build deps and slicer
+        if: env.SKIP != 'true'
+        working-directory: upstream
+        # -d deps, -s slicer, -r skip RAM/disk preflight, -l clang, -L ld.lld
+        # same flags upstream CI uses, minus the AppImage (-i) and tests (-t)
+        run: ./build_linux.sh -dsrlL
+
+      - name: Audit bundled libraries
+        if: env.SKIP != 'true'
+        working-directory: upstream
+        run: ./scripts/check_appimage_libs.sh ./build/package ./build/package/bin/orca-slicer
+
+      - name: Stage icons and desktop metadata
+        if: env.SKIP != 'true'
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y imagemagick
+          for size in $ICON_SIZES; do
+            mkdir -p ".pkg-stage/icons/hicolor/${size}x${size}/apps"
+            convert resources/images/OrcaSlicer.png -resize "${size}x${size}" \
+              ".pkg-stage/icons/hicolor/${size}x${size}/apps/OrcaSlicer.png"
+          done
+          find .pkg-stage -name '*.png' | sort
+
+      - name: Package deb and rpm
+        if: env.SKIP != 'true'
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/.*SoftFever_VERSION "\([^"]*\)".*/\1/p' version.inc | head -n1)
+          [ -n "$VERSION" ] || { echo "::error::could not read version from version.inc"; exit 1; }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          curl -fsSL -o /tmp/nfpm.tar.gz \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf /tmp/nfpm.tar.gz -C /tmp nfpm
+          mkdir -p ../dist
+          VERSION="$VERSION" /tmp/nfpm pkg -f ../nfpm.yaml -p deb -t ../dist/
+          VERSION="$VERSION" /tmp/nfpm pkg -f ../nfpm.yaml -p rpm -t ../dist/
+          ls -l ../dist
+
+      - name: Verify packages
+        if: env.SKIP != 'true'
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y rpm >/dev/null
+          deb=$(ls ../dist/*.deb)
+          rpmfile=$(ls ../dist/*.rpm)
+
+          required="
+          opt/OrcaSlicer/bin/orca-slicer
+          opt/OrcaSlicer/orca-slicer
+          opt/OrcaSlicer/resources
+          usr/bin/orca-slicer
+          usr/share/applications/com.orcaslicer.OrcaSlicer.desktop
+          "
+          for size in $ICON_SIZES; do
+            required="$required
+          usr/share/icons/hicolor/${size}x${size}/apps/OrcaSlicer.png"
+          done
+
+          dpkg-deb -c "$deb" | awk '{print $6}' | sed -e 's|^\./||' -e 's|/$||' | sort -u > /tmp/deb-files
+          rpm -qlp "$rpmfile" | sed -e 's|^/||' -e 's|/$||' | sort -u > /tmp/rpm-files
+
+          fail=0
+          for path in $required; do
+            for list in /tmp/deb-files /tmp/rpm-files; do
+              if ! grep -qx "$path" "$list"; then
+                echo "::error::missing $path in $list"
+                fail=1
+              fi
+            done
+          done
+
+          dpkg-deb -f "$deb" Depends
+          rpm -qRp "$rpmfile"
+
+          # the AppDir bundle must cover every non-host library the binary needs
+          rm -rf /tmp/stage && mkdir -p /tmp/stage
+          dpkg-deb -x "$deb" /tmp/stage
+          root=/tmp/stage/opt/OrcaSlicer
+          LD_LIBRARY_PATH="$root/lib/orca-runtime:$root/lib:$root/bin" \
+            ldd "$root/bin/orca-slicer" > /tmp/ldd.txt || true
+          if [ ! -s /tmp/ldd.txt ]; then
+            echo "::error::ldd produced no output for the packaged binary"
+            exit 1
+          fi
+          while read -r lib; do
+            [ -n "$lib" ] || continue
+            if ! bash -c 'source scripts/appimage_lib_policy.sh; appimage_is_host_library "$1"' _ "$lib"; then
+              echo "::error::$lib is neither bundled nor a declared host library"
+              fail=1
+            fi
+          done < <(grep 'not found' /tmp/ldd.txt | awk '{print $1}')
+          exit "$fail"
+
+      - name: Upload packages
+        if: env.SKIP != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-slicer-linux-packages
+          path: |
+            dist/*.deb
+            dist/*.rpm
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Publish release
+        if: env.SKIP != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+          gh release create "$REF" dist/*.deb dist/*.rpm \
+            --title "OrcaSlicer $VERSION (deb/rpm)" \
+            --notes "Packages built from OrcaSlicer source \`$REF\` on Ubuntu 24.04 (glibc >= 2.39).
+
+          Install:
+            sudo apt install ./orca-slicer_${VERSION}-1_amd64.deb
+            sudo dnf install ./orca-slicer-${VERSION}-1.x86_64.rpm
+
+          Unofficial community packages — upstream ships AppImage and Flatpak only."

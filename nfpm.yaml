@@ -1,0 +1,60 @@
+name: orca-slicer
+arch: amd64
+platform: linux
+version: ${VERSION}
+release: "1"
+section: graphics
+priority: optional
+maintainer: pixel3design-hub <noreply@pixel3design-hub>
+vendor: OrcaSlicer
+homepage: https://github.com/OrcaSlicer/OrcaSlicer
+license: AGPL-3.0-or-later
+description: |
+  OrcaSlicer, an open source 3D printing slicer (fork of Bambu Studio)
+  supporting a wide range of printers and built-in presets.
+
+contents:
+  # upstream build_linux_image.sh emits the complete runnable tree here:
+  # bin/orca-slicer, bundled lib/, libexec/orca-slicer-env, resources/, share/
+  - src: build/package
+    dst: /opt/OrcaSlicer
+    type: tree
+  - src: .pkg-stage/icons
+    dst: /usr/share/icons
+    type: tree
+  - src: src/dev-utils/platform/unix/com.orcaslicer.OrcaSlicer.desktop
+    dst: /usr/share/applications/com.orcaslicer.OrcaSlicer.desktop
+  # the AppDir launcher resolves DIR via readlink -f, so a symlink is enough
+  - src: /opt/OrcaSlicer/orca-slicer
+    dst: /usr/bin/orca-slicer
+    type: symlink
+
+# ponytail: curated list of the host libraries upstream does NOT bundle
+# (scripts/appimage_lib_policy.sh). GTK3/webkit transitively pull X11, wayland,
+# cairo, pango, glib, gstreamer, soup, fontconfig. The workflow's ldd check
+# fails the run when the bundle relies on an undeclared host library.
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.39)
+      - libstdc++6
+      - libgtk-3-0t64 | libgtk-3-0
+      - libwebkit2gtk-4.1-0
+      - libgl1
+      - libopengl0
+      - libglu1-mesa
+      - libsecret-1-0
+      - libpulse0
+      - libudev1
+  rpm:
+    depends:
+      - glibc >= 2.39
+      - libstdc++
+      - gtk3
+      - webkit2gtk4.1
+      - mesa-libGL
+      - libglvnd-opengl
+      - mesa-libGLU
+      - libsecret
+      - pulseaudio-libs
+      - systemd-libs
