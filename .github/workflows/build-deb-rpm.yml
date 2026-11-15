@@ -87,6 +87,18 @@ jobs:
           done
           find .pkg-stage -name '*.png' | sort
 
+      - name: Normalize file modes
+        if: env.SKIP != 'true'
+        working-directory: upstream
+        # upstream chmods the launcher ug+x (0754), which is fine inside an AppImage
+        # (owned by whoever runs it) but not once installed as root:root: the user
+        # is neither owner nor group, so the o+x bit is what makes it start.
+        run: |
+          set -euo pipefail
+          find build/package -type f -perm -u+x ! -perm -o+x -exec chmod o+x {} +
+          chmod 0755 build/package/orca-slicer build/package/libexec/orca-slicer-env
+          find build/package -maxdepth 1 -type f -printf '%m %p\n'
+
       - name: Package deb and rpm
         if: env.SKIP != 'true'
         working-directory: upstream
@@ -118,6 +130,7 @@ jobs:
           opt/OrcaSlicer/resources
           usr/bin/orca-slicer
           usr/share/applications/com.orcaslicer.OrcaSlicer.desktop
+          usr/share/metainfo/com.orcaslicer.OrcaSlicer.metainfo.xml
           "
           for size in $ICON_SIZES; do
             required="$required
@@ -140,10 +153,25 @@ jobs:
           dpkg-deb -f "$deb" Depends
           rpm -qRp "$rpmfile"
 
-          # the AppDir bundle must cover every non-host library the binary needs
+          # installed as root:root, so the other-execute bit must survive packaging
+          # (checked byte-for-byte: `test -x` passes for the owner/root even at 0754)
           rm -rf /tmp/stage && mkdir -p /tmp/stage
           dpkg-deb -x "$deb" /tmp/stage
           root=/tmp/stage/opt/OrcaSlicer
+          for path in ./opt/OrcaSlicer/orca-slicer ./opt/OrcaSlicer/libexec/orca-slicer-env ./opt/OrcaSlicer/bin/orca-slicer; do
+            mode=$(dpkg-deb -c "$deb" | awk -v p="$path" '$6==p{print $1}')
+            if [ "$mode" != "-rwxr-xr-x" ]; then
+              echo "::error::${path#./} is '${mode}' in the deb, expected -rwxr-xr-x"
+              fail=1
+            fi
+          done
+          rpm_mode=$(rpm -qlvp "$rpmfile" | awk '$1 ~ /^-/ && $NF=="/opt/OrcaSlicer/orca-slicer"{print $1}')
+          if [ "$rpm_mode" != "-rwxr-xr-x" ]; then
+            echo "::error::rpm launcher mode is '${rpm_mode}', expected -rwxr-xr-x"
+            fail=1
+          fi
+
+          # the AppDir bundle must cover every non-host library the binary needs
           LD_LIBRARY_PATH="$root/lib/orca-runtime:$root/lib:$root/bin" \
             ldd "$root/bin/orca-slicer" > /tmp/ldd.txt || true
           if [ ! -s /tmp/ldd.txt ]; then
@@ -158,6 +186,22 @@ jobs:
             fi
           done < <(grep 'not found' /tmp/ldd.txt | awk '{print $1}')
           exit "$fail"
+
+      - name: Smoke test the deb
+        if: env.SKIP != 'true'
+        working-directory: upstream
+        # apt failing here means the declared Depends are not satisfiable on
+        # Ubuntu 24.04. test -x runs as the unprivileged runner user, so a 0754
+        # launcher (executable for root only) is caught — ldd does not catch it.
+        run: |
+          set -euo pipefail
+          deb=$(ls ../dist/*.deb)
+          sudo apt-get install -y "$GITHUB_WORKSPACE/dist/$(basename "$deb")"
+          test -x /opt/OrcaSlicer/orca-slicer
+          test -x /usr/bin/orca-slicer
+          ls -l /opt/OrcaSlicer/orca-slicer
+          timeout 90 orca-slicer --help > /tmp/help.log 2>&1 || true
+          head -5 /tmp/help.log || true
 
       - name: Upload packages
         if: env.SKIP != 'true'
@@ -177,12 +221,14 @@ jobs:
           REF: ${{ steps.resolve.outputs.ref }}
         run: |
           set -euo pipefail
-          gh release create "$REF" dist/*.deb dist/*.rpm \
-            --title "OrcaSlicer $VERSION (deb/rpm)" \
-            --notes "Packages built from OrcaSlicer source \`$REF\` on Ubuntu 24.04 (glibc >= 2.39).
+          if ! gh release view "$REF" >/dev/null 2>&1; then
+            gh release create "$REF" --title "OrcaSlicer $VERSION (deb/rpm)" \
+              --notes "Packages built from OrcaSlicer source \`$REF\` on Ubuntu 24.04 (glibc >= 2.39).
 
           Install:
             sudo apt install ./orca-slicer_${VERSION}-1_amd64.deb
             sudo dnf install ./orca-slicer-${VERSION}-1.x86_64.rpm
 
           Unofficial community packages — upstream ships AppImage and Flatpak only."
+          fi
+          gh release upload "$REF" dist/*.deb dist/*.rpm --clobber

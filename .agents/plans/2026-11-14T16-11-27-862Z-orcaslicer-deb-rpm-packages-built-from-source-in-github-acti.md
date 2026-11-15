@@ -174,3 +174,30 @@ What the workflow does, how to dispatch it (`upstream_ref`, `force`), asset name
   webkit/gtk/OpenGL as host and tbb-like libs as bundled, and `actionlint` is clean on the workflow.
 - Local container runs need `--security-opt label=disable` on this Fedora host (SELinux), else
   bind-mounted writes fail with EACCES.
+
+## Post-release bug (v2.5.1, run 43614740254): launcher not executable
+
+Symptom on the installed rpm: `Avvio di «OrcaSlicer» non riuscito: Il programma
+«orca-slicer» è stato trovato in «/usr/bin/orca-slicer» ma non dispone degli
+attributi di esecuzione.` — `/opt/OrcaSlicer/orca-slicer` was `-rwxr-xr--` (0754).
+
+Cause: upstream's `build_linux_image.sh` creates the launcher with `cat >` (0644) and then
+`chmod ug+x`, giving 0754. Inside an AppImage that file is owned by whoever runs it, so u+x
+suffices; as a package it is root:root, the user is neither owner nor group, and the o+x bit
+is what matters.
+
+Fixes applied (all in one rebuild):
+- new `Normalize file modes` step before packaging: `o+x` on every file that already has a
+  u+x bit, plus explicit 0755 on `build/package/orca-slicer` and `libexec/orca-slicer-env`.
+- verify step asserts the deb's mode strings for launcher/env/binary and the rpm's launcher mode
+  (`test -x` is not enough — it passes for the owner and for root even at 0754).
+- new `Smoke test the deb` step: `apt-get install <deb>` (proves the Depends resolve on 24.04),
+  then `test -x` on the installed paths **as the unprivileged runner user**, then
+  `orca-slicer --help` (advisory; no display on the runner).
+- identity audit against upstream's Flatpak (`scripts/flatpak/com.orcaslicer.OrcaSlicer.yml`):
+  package `orca-slicer`, app/AppStream id `com.orcaslicer.OrcaSlicer`, desktop
+  `com.orcaslicer.OrcaSlicer.desktop`, icon `OrcaSlicer` — all consistent, and upstream's
+  `com.orcaslicer.OrcaSlicer.metainfo.xml` is now shipped to `/usr/share/metainfo/`.
+- maintainer email was `noreply@pixel3design-hub` (not a valid domain) → GitHub noreply address.
+- icons, desktop entry, MIME registration and `resources/profiles` verified present on the
+  installed system; `desktop-file-validate` passes; hicolor declares 512x512.

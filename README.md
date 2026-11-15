@@ -21,6 +21,17 @@ GitHub Actions and wraps the resulting tree into native distro packages.
 Installed layout: `/opt/OrcaSlicer` (bundled runtime), `/usr/bin/orca-slicer` symlink,
 `/usr/share/applications/com.orcaslicer.OrcaSlicer.desktop`, hicolor icons 16–512.
 
+Package identity (matches upstream's Flatpak/AppImage naming):
+
+| | |
+| --- | --- |
+| package name | `orca-slicer` |
+| command | `orca-slicer` |
+| install root | `/opt/OrcaSlicer` |
+| AppStream / app id | `com.orcaslicer.OrcaSlicer` (`/usr/share/metainfo/…`) |
+| desktop entry | `com.orcaslicer.OrcaSlicer.desktop` |
+| icon | `OrcaSlicer` (hicolor 16, 24, 32, 48, 64, 128, 256, 512) |
+
 ## Running it
 
 Actions → **build-deb-rpm** → *Run workflow*:

@@ -5,7 +5,7 @@ version: ${VERSION}
 release: "1"
 section: graphics
 priority: optional
-maintainer: pixel3design-hub <noreply@pixel3design-hub>
+maintainer: pixel3design-hub <pixel3design-hub@users.noreply.github.com>
 vendor: OrcaSlicer
 homepage: https://github.com/OrcaSlicer/OrcaSlicer
 license: AGPL-3.0-or-later
@@ -24,6 +24,9 @@ contents:
     type: tree
   - src: src/dev-utils/platform/unix/com.orcaslicer.OrcaSlicer.desktop
     dst: /usr/share/applications/com.orcaslicer.OrcaSlicer.desktop
+  # upstream AppStream metadata: id and launchable match the desktop file name above
+  - src: scripts/flatpak/com.orcaslicer.OrcaSlicer.metainfo.xml
+    dst: /usr/share/metainfo/com.orcaslicer.OrcaSlicer.metainfo.xml
   # the AppDir launcher resolves DIR via readlink -f, so a symlink is enough
   - src: /opt/OrcaSlicer/orca-slicer
     dst: /usr/bin/orca-slicer
