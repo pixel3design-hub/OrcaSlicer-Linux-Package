@@ -201,3 +201,25 @@ Fixes applied (all in one rebuild):
 - maintainer email was `noreply@pixel3design-hub` (not a valid domain) → GitHub noreply address.
 - icons, desktop entry, MIME registration and `resources/profiles` verified present on the
   installed system; `desktop-file-validate` passes; hicolor declares 512x512.
+
+## Second pass: node20 deprecation + Fedora runtime deps (local validation)
+
+- The run warned `Node.js 20 is deprecated ... actions/checkout@v4, actions/upload-artifact@v4`.
+  `checkout@v5+` and `upload-artifact@v6+` declare `runs: using: node24` (checked per tag via the
+  API). Workflow now uses `actions/checkout@v7` and `actions/upload-artifact@v7`.
+- Local end-to-end validation (node v24.10.0 inside the container, the exact step bodies run
+  against a **real** AppDir: upstream's `OrcaSlicer_Linux_AppImage_Ubuntu2404_V2.5.1.AppImage`
+  extracted, `AppRun` renamed to `orca-slicer` and chmod 0754 to reproduce the bug) found:
+  - normalize + package + all verify assertions pass, `ldd` audit clean on the real bundle;
+  - `apt-get install <deb>` succeeds (Depends resolvable on 24.04), non-root `test -x` true,
+    `orca-slicer --help` prints `OrcaSlicer-2.5.1: Usage: ...` — the launcher needs no display,
+    so it is now a hard gate in CI.
+  - **rpm bug found**: on `fedora:latest` the binary died with
+    `error while loading shared libraries: libSM.so.6`. `libSM`/`libICE` are in upstream's
+    host-library policy (never bundled) but gtk3 does not pull them on Fedora. Added `libSM`,
+    `libICE` (rpm) and `libsm6`, `libice6` (deb); both containers now run the packaged binary.
+  - Icon source switched from the 154px `resources/images/OrcaSlicer.png` to the 192px
+    `OrcaSlicer_192px.png` (largest raster available; the 256px one only exists inside an .ico).
+- New hard gate: `Smoke test the rpm on Fedora` runs the rpm in `fedora:latest` via docker and
+  requires `orca-slicer --help` to print. `dnf` resolving the dep names is the actual assertion —
+  a Ubuntu-only `ldd` audit cannot catch distro-specific package naming.

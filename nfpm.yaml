@@ -47,6 +47,8 @@ overrides:
       - libopengl0
       - libglu1-mesa
       - libsecret-1-0
+      - libsm6
+      - libice6
       - libpulse0
       - libudev1
   rpm:
@@ -59,5 +61,7 @@ overrides:
       - libglvnd-opengl
       - mesa-libGLU
       - libsecret
+      - libSM
+      - libICE
       - pulseaudio-libs
       - systemd-libs
